@@ -12,5 +12,6 @@ This is a software-defined receiver for the Mode S messages. It uses the rtl-sdr
 
 I suppose a makefile would be nice, but here is the current procedure:
 
-    gcc -I/opt/local/include -L/opt/local/lib -Wall -O3 receiver.c -lrtlsdr -pthread -march=corei7-avx -S -funsafe-math-optimizations -ftree-vectorizer-verbose=0
+    gcc -I/opt/local/include -L/opt/local/lib -Wall -O3 receiver.c -lrtlsdr -pthread -march=corei7-avx \
+        -S -funsafe-math-optimizations -ftree-vectorizer-verbose=0
     clang -L/opt/local/lib -Wall receiver.s -o receiver -lrtlsdr -pthread
