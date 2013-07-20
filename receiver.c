@@ -54,6 +54,9 @@
 
 // Maximum number of known ICAO numbers to store
 #define ICAO_LIST_SIZE 256
+#define ICAO_N_BITS 24  // Number of bits in the ICAO address
+// The fast list is a big bitfield with 1 bit for each possible address.
+#define ICAO_FAST_LIST_SIZE ((1 << ICAO_N_BITS) / 32)  // Array of uint32_t so 32 aircraft per address
 
 // detect_thresh is the correlation peak threshold required for a decoding attempt. A threshold of zero means that the total energy
 // in the spaces is equal to the total energy in the marks -- quite a bad SNR.
@@ -63,8 +66,14 @@ const float detect_thresh = 0.0;
 const int debug = 0;
 
 // Setting fix_xored_crcs will cause the error correction code to attempt to fix single bit errors in messages where the CRC is XORed with
-// the ICAO aircraft address. Doing this is computationally very intensive.
-const int fix_xored_crcs = 0;
+// the ICAO aircraft address. Doing this is computationally more intensive.
+const int fix_xored_crcs = 1;
+/*
+ * Setting fix_2_bit_errors will cause the error correction code to attempt to fix double bit errors but only in messages where the CRC is not
+ * XORed with the ICAO aircraft address. Double bit errors where both flipped bits fall within the DF field will not be corrected. Fixing
+ * double bit errors is computationally quite intensive.
+ */
+const int fix_2_bit_errors = 1;
 
 // Mode S receiver parameters
 #define MODE_S_FREQ 1090000000
@@ -114,7 +123,9 @@ float soft_bits[MESSAGE_BITS_MAX] __attribute__ ((aligned (32)));
 int hard_bits[MESSAGE_BITS_MAX] __attribute__ ((aligned (32)));
 
 // The list of ICAO numbers of previously seen aircraft
-uint32_t icao_list[ICAO_LIST_SIZE] __attribute__ ((aligned (32)));
+uint32_t icao_list[ICAO_LIST_SIZE];
+uint32_t icao_fast_list[ICAO_FAST_LIST_SIZE];
+int icao_wrindex = 0;
 
 // RTL-SDR device pointer
 rtlsdr_dev_t *dev;
@@ -231,44 +242,80 @@ static void rtl_sdr_init(int dev_index) {
 /* Demodulation, Error Detection and Error Correction Functions ======================================================================================= */
 
 /*
+ * Perform a fast lookup of ICAO number icao.
+ * If it is in the list of known aircraft then return 0. If the number is invalid then return -1. If the number
+ * is valid but not in the list then return 1;
+ */
+static inline int icao_fast_lookup(uint32_t icao) {
+    if (icao == 0 || icao >= ((1 << ICAO_N_BITS) - 1))
+        return -1;
+
+    // The lower 5 bits of the ICAO No. give the bit number (0 to 31) and the upper 19 give the
+    // index in the fast list.
+    if ((icao_fast_list[icao>>5] >> (icao & 0x1f)) & 1)
+        return 0;
+    else
+        return 1;
+}
+
+/*
+ * Add a new ICAO number to the lists of known aircraft.
+ * Oldest entries are overwritten by newest ones. The function returns 0 if the new ICAO number was
+ * successfully added or if it was already there. -1 is returned if the number is invalid.
+ */
+static inline int icao_add(uint32_t icao) {
+    if (icao == 0 || icao >= ((1 << ICAO_N_BITS) - 1))
+        return -1;
+    else if ((icao_fast_list[icao>>5] >> (icao & 0x1f)) & 1)  // It's already there.
+        return 0;
+    else {
+        uint32_t old;
+        // Clear the previous entry from the fast list if it exists.
+        if ((old = icao_list[icao_wrindex]) != 0)
+            icao_fast_list[old>>5] &= ~(1 << (old & 0x1f));
+
+        // Write the new entry to the slow list.
+        icao_list[icao_wrindex++] = icao;
+        if (icao_wrindex >= ICAO_LIST_SIZE)  // Wrap the write index.
+            icao_wrindex = 0;
+
+        // Write the new entry to the fast list.
+        icao_fast_list[icao>>5] |= (1 << (icao & 0x1f));
+
+        if (debug)
+            fprintf(stderr, "Added %.6x\n", icao);
+
+        return 0;
+    }
+}
+
+/*
  * Display the contents of a succesfully decoded message and add the ICAO No. to the list of known aircraft if necessary.
  */
 static void message_post_process(int filter_no, int sample_start, uint32_t icao_from_crc, int icao_in_message) {
-    static int icao_wrindex = 0;
     uint32_t icao_from_message = 0;
     int i;
-    
-    // Print the timestamp in samples.
-    printf("%.14llu.%.2d: ", block_no * PROCESS_BLOCK_SIZE + sample_start, 100 * filter_no / N_FILTERS);
-    
+
     // If this is a DF11, DF17 or DF18 then extract the ICAO number and add it to the list if it isn't already there.
     if (icao_in_message) {
         for (i = 8; i < 32; ++i)  // The aircraft address is stored in bits [8:31] for these message types (big endian).
             icao_from_message = (icao_from_message << 1) | hard_bits[i];
-        printf("0x%.6x, ", icao_from_message);
-        
-        // Search the aircraft list for the ICAO number.
-        for (i = 0; i <= ICAO_LIST_SIZE; ++i) {
-            if (i == ICAO_LIST_SIZE) {  // It's not there.
-                icao_list[icao_wrindex++] = icao_from_message;
-                if (debug)
-                    fprintf(stderr, "Added %.6x\n", icao_from_message);
-            }
-            else if (icao_list[i] == icao_from_message)
-                break;
+
+        if (icao_add(icao_from_message)) {
+            fprintf(stderr, "Received valid message containing invalid ICAO number: 0x%.6x\n", icao_from_message);
+            return;
         }
-        if (icao_wrindex >= ICAO_LIST_SIZE)  // Wrap the write index.
-            icao_wrindex = 0;
-    } else {
-        // If it isn't a DF11, DF17 or DF18 then just print the number already extracted from the CRC field (this must be in the list anyway).
-        printf("0x%.6x, ", icao_from_crc);
     }
-    
+
+    // Print the timestamp in samples and the ICAO number.
+    printf("%.14llu.%.2d: ", block_no * PROCESS_BLOCK_SIZE + sample_start, 100 * filter_no / N_FILTERS);
+    printf("0x%.6x, ", (icao_in_message) ? icao_from_message : icao_from_crc);
+
     // Print the message content in hex.
     printf("0x");
     for (i = 0; i < ((hard_bits[0]) ? MESSAGE_BITS_MAX : MESSAGE_BITS_SHORT) - 24; i += 4)  // We don't need to print the CRC (hence the - 24).
         printf("%x", hard_bits[i] << 3 | hard_bits[i+1] << 2 | hard_bits[i+2] << 1 | hard_bits[i+3]);
-    
+
     printf(";\n");
 }
 
@@ -287,7 +334,7 @@ static void message_post_process(int filter_no, int sample_start, uint32_t icao_
 static inline int calc_crc(uint32_t *crc_remainder, int *icao_in_message) {
     int i;
     uint32_t crc_val = 0;
-    
+
     if (hard_bits[0]) {
         // Message is long (112 bits).
         for (i = 0; i < MESSAGE_BITS_MAX; ++i) {
@@ -305,18 +352,18 @@ static inline int calc_crc(uint32_t *crc_remainder, int *icao_in_message) {
     if ((hard_bits[0] && !hard_bits[1] && !hard_bits[2] && hard_bits[3] && !hard_bits[4]) ||  // DF18 (10010)
         (hard_bits[0] && !hard_bits[1] && !hard_bits[2] && !hard_bits[3] && hard_bits[4]) ||  // DF17 (10001)
         (!hard_bits[0] && hard_bits[1] && !hard_bits[2] && hard_bits[3] && hard_bits[4])) {   // DF11 (01011)
-        
+
         *icao_in_message = 1;
         return (crc_val) ? -1 : 0;
     } else {
         // All other messages need to have their CRC remainder compared with the known aircraft list.
         *icao_in_message = 0;
-        for (i = 0; i < ICAO_LIST_SIZE; ++i)
-            if (crc_val == icao_list[i])
-                return 0;
-        return -1;
+        if (icao_fast_lookup(crc_val) == 0)
+            return 0;
+        else
+            return -1;
     }
-    
+
     return -1;  // Shouldn't get here.
 }
 
@@ -334,8 +381,8 @@ static inline int calc_crc(uint32_t *crc_remainder, int *icao_in_message) {
  * CRC is calculated.
  */
 static inline int fix_1_bit(uint32_t remainder, int icao_in_message) {
-    int i, j;
-    
+    int i;
+
     if (icao_in_message) {
         if (hard_bits[0]) {
             for (i = DF_BITS; i < MESSAGE_BITS_MAX; ++i)
@@ -353,21 +400,19 @@ static inline int fix_1_bit(uint32_t remainder, int icao_in_message) {
     } else if (fix_xored_crcs) {
         if (hard_bits[0]) {
             for (i = DF_BITS; i < MESSAGE_BITS_MAX; ++i)
-                for (j = 0; j < ICAO_LIST_SIZE; ++j)
-                    if (remainder == (crc_table[i] ^ icao_list[j])) {
-                        hard_bits[i] ^= 1;
-                        return i;
-                    }
+                if (!icao_fast_lookup(remainder ^ crc_table[i])) {
+                    hard_bits[i] ^= 1;
+                    return i;
+                }
         } else {
             for (i = DF_BITS; i < MESSAGE_BITS_SHORT; ++i)
-                for (j = 0; j < ICAO_LIST_SIZE; ++j)
-                    if (remainder == (crc_table[i+MESSAGE_BITS_SHORT] ^ icao_list[j])) {
-                        hard_bits[i] ^= 1;
-                        return i;
-                    }
+                if (!icao_fast_lookup(remainder ^ crc_table[i+MESSAGE_BITS_SHORT])) {
+                    hard_bits[i] ^= 1;
+                    return i;
+                }
         }
     }
-    
+
     return -1;
 }
 
@@ -384,10 +429,10 @@ static inline int fix_1_bit(uint32_t remainder, int icao_in_message) {
  * If decoding is successful, the function returns the number of samples occupied by the message.
  */
 static int demod_decode(int filter_no, int sample_start) {
-    int i;
+    int i, j;
     uint32_t icao_from_crc = 0;
-    int icao_in_message;
-    
+    int icao_in_message, icao_in_message_orig;
+
     // Perform initial soft demodulation.
     sample_start += PREAMBLE_SAMPLES;  // Skip the preamble.
     for (i = 0; i < MESSAGE_BITS_MAX; ++i) {  // This must vectorize.
@@ -395,7 +440,8 @@ static int demod_decode(int filter_no, int sample_start) {
                                    (interp_buf[filter_no][sample_start+2*i] + interp_buf[filter_no][sample_start+2*i+1]) ;
         hard_bits[i] = (soft_bits[i] > 0.5) ? 1 : 0;
     }
-    
+
+    // Check the CRC.
     if (!calc_crc(&icao_from_crc, &icao_in_message)) {
         if (debug) {
             fprintf(stderr, "CRC OK");
@@ -408,14 +454,17 @@ static int demod_decode(int filter_no, int sample_start) {
         return (hard_bits[0]) ? (MESSAGE_BITS_MAX * SAMPLES_PER_BIT) : (MESSAGE_BITS_SHORT * SAMPLES_PER_BIT);
     } else {
         // CRC failure -- try to correct the error.
-        // Step 1: sweep for a single bit error
+        icao_in_message_orig = icao_in_message;  // Save the original CRC mode for step 3 below.
+
+        // Step 1: sweep for a single bit error.
         if ((i = fix_1_bit(icao_from_crc, icao_in_message)) >= 0) {
             if (debug)
                 fprintf(stderr, "CRC CORRECTED [%d]\n", i);
             message_post_process(filter_no, sample_start, icao_from_crc, icao_in_message);
             return (hard_bits[0]) ? (MESSAGE_BITS_MAX * SAMPLES_PER_BIT) : (MESSAGE_BITS_SHORT * SAMPLES_PER_BIT);
         }
-        // fix_1_bit() doesn't correct the message type field so that has to be tried manually.
+
+        // Step 2: fix_1_bit() doesn't correct the message type field so that has to be tried manually.
         for (i = 0; i < DF_BITS; ++i) {
             hard_bits[i] ^= 1;
             if (!calc_crc(&icao_from_crc, &icao_in_message)) {
@@ -428,11 +477,34 @@ static int demod_decode(int filter_no, int sample_start) {
                 }
                 message_post_process(filter_no, sample_start, icao_from_crc, icao_in_message);
                 return (hard_bits[0]) ? (MESSAGE_BITS_MAX * SAMPLES_PER_BIT) : (MESSAGE_BITS_SHORT * SAMPLES_PER_BIT);
+            // Try to fix another bit within the message when in fix_2_bits mode.
+            } else if (fix_2_bit_errors && icao_in_message && (j = fix_1_bit(icao_from_crc, icao_in_message)) >= 0) {
+                if (debug)
+                    fprintf(stderr, "CRC CORRECTED [%d, %d]\n", i, j);
+                message_post_process(filter_no, sample_start, icao_from_crc, icao_in_message);
+                return (hard_bits[0]) ? (MESSAGE_BITS_MAX * SAMPLES_PER_BIT) : (MESSAGE_BITS_SHORT * SAMPLES_PER_BIT);
             }
             hard_bits[i] ^= 1;
         }
+
+        // Step 3: If requested, try to fix a double bit error within the main body of the message.
+        // In this loop, we assume that the DF field has been correctly received (it has already been twiddled in step 2).
+        if (fix_2_bit_errors && icao_in_message_orig) {
+            int imax = (hard_bits[0]) ? MESSAGE_BITS_MAX : MESSAGE_BITS_SHORT;
+            for (i = DF_BITS; i < imax; ++i) {
+                hard_bits[i] ^= 1;
+                calc_crc(&icao_from_crc, &icao_in_message);  // This is guaranteed to fail.
+                if ((j = fix_1_bit(icao_from_crc, icao_in_message)) >= 0) {
+                    if (debug)
+                        fprintf(stderr, "CRC CORRECTED [%d, %d]\n", i, j);
+                    message_post_process(filter_no, sample_start, icao_from_crc, icao_in_message);
+                    return (hard_bits[0]) ? (MESSAGE_BITS_MAX * SAMPLES_PER_BIT) : (MESSAGE_BITS_SHORT * SAMPLES_PER_BIT);
+                }
+                hard_bits[i] ^= 1;
+            }
+        }
     }
-    
+
     // If we get to here then the message remains undecoded.
     return 0;
 }
@@ -624,9 +696,11 @@ int main(int argc, char *argv[]) {
         for (j = 0; j < PROCESS_BLOCK_SIZE+PREAMBLE_SAMPLES; ++j)
             interp_buf[i][j] = 1.0;
     
-    // Initialise the aircraft address list with something which is not a valid aircraft address and is not likely to result from a small number of bit errors.
+    // Initialise the aircraft address lists with zeros (zero is defined as an invalid address).
     for (i = 0; i < ICAO_LIST_SIZE; ++i)
-        icao_list[i] = 0xf2f308a0;
+        icao_list[i] = 0;
+    for (i = 0; i < ICAO_FAST_LIST_SIZE; ++i)
+        icao_fast_list[i] = 0;
     
     pthread_mutex_init(&sbuf_mutex, NULL);
     pthread_cond_init(&go_process_cond, NULL);
