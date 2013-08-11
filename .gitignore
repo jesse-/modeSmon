@@ -16,6 +16,10 @@
 *.out
 *.app
 
+# Cached Python bytecode
+*.pyc
+__pycache__
+
 # Executable and intermediate .s file for receiver.c
 /receiver/receiver.s
 /receiver/receiver
