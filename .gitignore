@@ -17,6 +17,6 @@
 *.app
 
 # Executable and intermediate .s file for receiver.c
-receiver.s
-receiver
+/receiver/receiver.s
+/receiver/receiver
 
