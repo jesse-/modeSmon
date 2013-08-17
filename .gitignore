@@ -24,3 +24,5 @@ __pycache__
 /receiver/receiver.s
 /receiver/receiver
 
+# Mac files
+.DS_STORE

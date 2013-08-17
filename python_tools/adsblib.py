@@ -5,6 +5,10 @@
 # with the ME field of a Mode S squitter. The resulting object can be
 # queried for the message type and content.
 #
+# Details of the ADS-B message format can be found in ICAO document
+# 9871 -- 'Technical Provisions for Mode S Services and Extended Squitter'
+# -- Appendix C.
+#
 # Copyright (C) 2013 Jesse Hamer
 #
 # This program is free software: you can redistribute it and/or modify
@@ -32,37 +36,37 @@ TYPE_LENGTH_BITS = 5
 TYPE_TABLE = (
 #   Type  | Format  | Description
     (0,    'NOPOS',   'No position information available. Barometric altitude may be available.'),
-    (1,    'IDENT',   'Aircraft identifiaction and category (set D).'),
-    (2,    'IDENT',   'Aircraft identifiaction and category (set C).'),
-    (3,    'IDENT',   'Aircraft identifiaction and category (set B).'),
-    (4,    'IDENT',   'Aircraft identifiaction and category (set A).'),
-    (5,    'SPOS',    'Surface position message.'),
-    (6,    'SPOS',    'Surface position message.'),
-    (7,    'SPOS',    'Surface position message.'),
-    (8,    'SPOS',    'Surface position message.'),
-    (9,    'APOS',    'Airborne position plus barometric altitude.'),
-    (10,   'APOS',    'Airborne position plus barometric altitude.'),
-    (11,   'APOS',    'Airborne position plus barometric altitude.'),
-    (12,   'APOS',    'Airborne position plus barometric altitude.'),
-    (13,   'APOS',    'Airborne position plus barometric altitude.'),
-    (14,   'APOS',    'Airborne position plus barometric altitude.'),
-    (15,   'APOS',    'Airborne position plus barometric altitude.'),
-    (16,   'APOS',    'Airborne position plus barometric altitude.'),
-    (17,   'APOS',    'Airborne position plus barometric altitude.'),
-    (18,   'APOS',    'Airborne position plus barometric altitude.'),
-    (19,   'AVEL',    'Airborne velocity plus difference between barometric altitude and GNSS height.'),
-    (20,   'APOS',    'Airborne position plus GNSS height.'),
-    (21,   'APOS',    'Airborne position plus GNSS height.'),
-    (22,   'APOS',    'Airborne position plus GNSS height.'),
-    (23,   'TEST',    'Test message.'),
-    (24,   'SSTATUS', 'Surface system status.'),
-    (25,   'RESVD',   'Reserved.'),
-    (26,   'RESVD',   'Reserved.'),
-    (27,   'RESVD',   'Reserved.'),
-    (28,   'ASTATUS', 'Aircraft status message.'),
-    (29,   'TSTATUS', 'Target status message.'),
-    (30,   'RESVD',   'Reserved.'),
-    (31,   'AOSTATUS', 'Aircraft operational status.')
+    (1,    'IDENT',   'Aircraft identifiaction and category (set D)'),
+    (2,    'IDENT',   'Aircraft identifiaction and category (set C)'),
+    (3,    'IDENT',   'Aircraft identifiaction and category (set B)'),
+    (4,    'IDENT',   'Aircraft identifiaction and category (set A)'),
+    (5,    'SPOS',    'Surface position message'),
+    (6,    'SPOS',    'Surface position message'),
+    (7,    'SPOS',    'Surface position message'),
+    (8,    'SPOS',    'Surface position message'),
+    (9,    'APOS',    'Airborne position plus barometric altitude'),
+    (10,   'APOS',    'Airborne position plus barometric altitude'),
+    (11,   'APOS',    'Airborne position plus barometric altitude'),
+    (12,   'APOS',    'Airborne position plus barometric altitude'),
+    (13,   'APOS',    'Airborne position plus barometric altitude'),
+    (14,   'APOS',    'Airborne position plus barometric altitude'),
+    (15,   'APOS',    'Airborne position plus barometric altitude'),
+    (16,   'APOS',    'Airborne position plus barometric altitude'),
+    (17,   'APOS',    'Airborne position plus barometric altitude'),
+    (18,   'APOS',    'Airborne position plus barometric altitude'),
+    (19,   'AVEL',    'Airborne velocity plus difference between barometric altitude and GNSS height'),
+    (20,   'APOS',    'Airborne position plus GNSS height'),
+    (21,   'APOS',    'Airborne position plus GNSS height'),
+    (22,   'APOS',    'Airborne position plus GNSS height'),
+    (23,   'TEST',    'Test message'),
+    (24,   'SSTATUS', 'Surface system status'),
+    (25,   'RESVD',   'Reserved'),
+    (26,   'RESVD',   'Reserved'),
+    (27,   'RESVD',   'Reserved'),
+    (28,   'ASTATUS', 'Aircraft status message'),
+    (29,   'TSTATUS', 'Target status message'),
+    (30,   'RESVD',   'Reserved'),
+    (31,   'AOSTATUS', 'Aircraft operational status')
 )
 
 # Character set used in identifiaction messages
@@ -109,6 +113,54 @@ def parse_ident(msg_type, message):
     return ret
 
 
+def parse_apos(msg_type, message):
+    """Parse an airborne position message to extract position and altitude.
+    
+    The airborne position consists of CPR encoded (see ###) latitude and
+    longitude along with an altitude code. The NIC-B field and the message type
+    indicate the positional accuracy. Surveillance status and time sync
+    status are also carried in these messages.
+    """
+    
+    ret = {}
+    
+    # Airborne position messages use register format 05.
+    s_status = (message >> 49) & 0x03
+    nic_b = (message >> 48) & 0x01
+    alt_code = (message >> 36) & 0xfff
+    time_sync = (message >> 35) & 0x01
+    cpr_format = (message >> 34) & 0x01
+    cpr_lat = (message >> 17) & 0x1ffff
+    cpr_lon = message & 0x1ffff
+    
+    if msg_type >= 20 and msg_type <= 22:
+        ret['Alt. Type'] = 'GNSS'
+    elif msg_type >= 9 and msg_type <= 18:
+        ret['Alt. Type'] = 'Barometric'
+    else:
+        raise ValueError('Message type {0} is not an airborne position type.'.format(msg_type))
+    
+    if s_status == 1:
+        ret['Surveillance Status'] = 'Emergency'
+    elif s_status == 2:
+        ret['Surveillance Status'] = 'Temporary Alert (Changed Mode A Status)'
+    elif s_status == 3:
+        ret['Surveillance Status'] = 'Special Position Identification'
+    
+    if ret['Alt. Type'] == 'GNSS':
+        ret['Altitude'] = 'GNSS code 0x{0:X}'.format(alt_code)  # Not sure how this is coded yet. I think it's some sort of BCD affair.
+    else:
+        ret['Altitude'] = None  # Need Tom's decoding function for this -- it's almost the same as the native Mode S code.
+    
+    ret['NIC Supplement-B'] = nic_b
+    ret['Time Synchronized'] = True if time_sync else False
+    ret['CPR Format'] = 'Odd' if cpr_format else 'Even'
+    ret['CPR Latitude'] = cpr_lat
+    ret['CPR Longitude'] = cpr_lon
+    
+    return ret
+
+
 class Message:
     """A class to hold the data conveyed by an ADS-B message
     
@@ -125,7 +177,9 @@ class Message:
         
         self.type = self.ME >> (ME_LENGTH_BITS - TYPE_LENGTH_BITS)  # Extract the type code from the msbs
         
-        if TYPE_TABLE[self.type][1] == 'IDENT':
+        if TYPE_TABLE[self.type][1] == 'APOS':
+            self.params = parse_apos(self.type, self.ME)
+        elif TYPE_TABLE[self.type][1] == 'IDENT':
             self.params = parse_ident(self.type, self.ME)
         else:
             self.params = {}
