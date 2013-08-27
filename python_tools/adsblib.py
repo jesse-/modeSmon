@@ -116,7 +116,7 @@ def parse_ident(msg_type, message):
 def parse_apos(msg_type, message):
     """Parse an airborne position message to extract position and altitude.
     
-    The airborne position consists of CPR encoded (see ###) latitude and
+    The airborne position consists of CPR encoded (see C.2.6) latitude and
     longitude along with an altitude code. The NIC-B field and the message type
     indicate the positional accuracy. Surveillance status and time sync
     status are also carried in these messages.
@@ -161,6 +161,71 @@ def parse_apos(msg_type, message):
     return ret
 
 
+def parse_spos(msg_type, message):
+    """Parse a surface position message to extract position and movement (speed & heading).
+    
+    This is a similar format to the airborne position message but it includes speed and heading
+    information instead of altitude.
+    """
+    
+    def dequantize(nlow, nhigh, xlow, xhigh, n):
+        """Deal with the silly quantization used for surface movement reporting."""
+        nsteps = nhigh - nlow + 1
+        delta = (xhigh - xlow) / nsteps
+        return xlow + (n - nlow + 1) * delta
+    
+    ret = {}
+    
+    if msg_type < 5 or msg_type > 8:
+        raise ValueError('Message type {0} is not an airborne position type.'.format(msg_type))
+    
+    # Surface position messages use register format 06.
+    movement = (message >> 44) & 0x7f
+    heading_valid = (message >> 43) & 0x01
+    heading = (message >> 36) & 0x7f
+    # These fields are the same as the airborne message (although the CPR encoding is different)
+    time_sync = (message >> 35) & 0x01
+    cpr_format = (message >> 34) & 0x01
+    cpr_lat = (message >> 17) & 0x1ffff
+    cpr_lon = message & 0x1ffff
+    
+    # This isn't pretty. It implements table C-3.
+    if movement == 1:
+        ret['Movement'] = 'Stopped'
+    elif movement == 2:
+        ret['Movement'] = '<= 0.125kt'
+    elif movement >= 3 and movement <= 8:
+        ret['Movement'] = '{0}kt'.format(dequantize(3, 8, 0.125, 1.0, movement))
+    elif movement >= 9 and movement <= 12:
+        ret['Movement'] = '{0}kt'.format(dequantize(9, 12, 1.0, 2.0, movement))
+    elif movement >= 13 and movement <= 38:
+        ret['Movement'] = '{0}kt'.format(dequantize(13, 38, 2.0, 15.0, movement))
+    elif movement >= 39 and movement <= 93:
+        ret['Movement'] = '{0}kt'.format(dequantize(39, 93, 15.0, 70.0, movement))
+    elif movement >= 94 and movement <= 108:
+        ret['Movement'] = '{0}kt'.format(dequantize(94, 108, 70.0, 100.0, movement))
+    elif movement >= 109 and movement <= 123:
+        ret['Movement'] = '{0}kt'.format(dequantize(109, 123, 100.0, 175.0, movement))
+    elif movement == 124:
+        ret['Movement'] = '> 175kt'
+    elif movement == 125:
+        ret['Movement'] = 'Decelerating'
+    elif movement == 126:
+        ret['Movement'] = 'Accelerating'
+    elif movement == 127:
+        ret['Movement'] = 'Reversing'
+    
+    if heading_valid:
+        ret['Heading'] = 360.0 * (heading / (2 ** 7))
+    
+    ret['Time Synchronized'] = True if time_sync else False
+    ret['CPR Format'] = 'Odd' if cpr_format else 'Even'
+    ret['CPR Latitude'] = cpr_lat
+    ret['CPR Longitude'] = cpr_lon
+    
+    return ret
+
+
 class Message:
     """A class to hold the data conveyed by an ADS-B message
     
@@ -181,13 +246,24 @@ class Message:
             self.params = parse_apos(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'IDENT':
             self.params = parse_ident(self.type, self.ME)
+        elif TYPE_TABLE[self.type][1] == 'SPOS':
+            self.params = parse_spos(self.type, self.ME)
         else:
             self.params = {}
             if DEBUG:
                 print('Note: No parser for messsage type {0} ({1}).'.format(self.type, TYPE_TABLE[self.type][2]))
+    
+    def describe(self):
+        return TYPE_TABLE[self.type][2]
+    
+    def params_dict(self):
+        return self.params
 
 
 if __name__ == '__main__':
     es = int(input('Enter an extended squitter message block in hex (omit the CRC): '), 16)
     m = Message(es & 0xffffffffffffff)
-    print(m.params)
+    print(m.describe(), end=':\n')
+    params = m.params_dict()
+    for key in params.keys():
+        print('    {0}: {1}'.format(key, params[key]))
