@@ -226,6 +226,80 @@ def parse_spos(msg_type, message):
     return ret
 
 
+def parse_avel(msg_type, message):
+    """Parse an airborne velocity message to extract speed, direction and vertical rate.
+    
+    Subtypes 1 and 2 contain velocity over ground and vertical rate. Subtypes 3 and 4 contain
+    heading and airspeed. All subtypes optinally contain the geometric difference between GNSS
+    and barometric altitude.
+    """
+    
+    ret = {}
+    
+    if msg_type != 19:
+        raise ValueError('Message type {0} is not an airborne velocity type.'.format(msg_type))
+    
+    subtype = (message >> 48) & 0x07
+    intent_change = (message >> 47) & 0x01
+    nac_v = (message >> 43) & 0x07
+    vert_rate_type = (message >> 20) & 0x01
+    vert_rate_sign = (message >> 19) & 0x01
+    vert_rate = (message >> 10) & 0x1ff
+    height_diff_sign = (message >> 7) & 0x01
+    height_diff = message & 0x7f
+    
+    ret['Intent Change'] = True if intent_change else False
+    
+    if nac_v == 1:
+        ret['Horiz. Velocity Error (m/s)'] = 10.0
+    elif nac_v == 2:
+        ret['Horiz. Velocity Error (m/s)'] = 3.0
+    elif nac_v == 3:
+        ret['Horiz. Velocity Error (m/s)'] = 1.0
+    elif nac_v == 4:
+        ret['Horiz. Velocity Error (m/s)'] = 0.3
+    
+    if vert_rate > 0 and vert_rate < 511:
+        vert_rate = (vert_rate - 1) * 64.0
+        ret['Vertical Rate (ft/min)'] = -vert_rate if vert_rate_sign else vert_rate
+        ret['Vertical Rate Source'] = 'Baro' if vert_rate_type else 'GNSS'
+    
+    if height_diff > 0 and height_diff < 127:
+        height_diff = (height_diff - 1) * 25.0
+        ret['GNSS Alt. - Baro Alt. (ft)'] = -height_diff if height_diff_sign else height_diff
+    
+    # Speed multiplier
+    if subtype == 2 or subtype == 4:  # Supersonic
+        mult = 4.0
+    else:  # Subsonic
+        mult = 1.0
+    
+    if subtype == 1 or subtype == 2:
+        # We have N-S and E-W velocity
+        ew_sign = (message >> 42) & 0x01
+        vel_ew = (message >> 32) & 0x3ff
+        ns_sign = (message >> 31) & 0x01
+        vel_ns = (message >> 21) & 0x3ff
+        if vel_ew > 0 and vel_ew < 1023 and vel_ns > 0 and vel_ns < 1023:
+            ret['Velocity East (kt)'] = -(vel_ew - 1) * mult if ew_sign else (vel_ew - 1) * mult
+            ret['Velocity North (kt)'] = -(vel_ns - 1) * mult if ns_sign else (vel_ns - 1) * mult
+    elif subtype == 3 or subtype == 4:
+        # We have airspeed and heading
+        heading_valid = (message >> 42) & 0x01
+        heading = (message >> 32) & 0x3ff
+        airspeed_type = (message >> 31) & 0x01
+        airspeed = (message >> 21) & 0x3ff
+        if heading_valid:
+            ret['Heading'] = heading * 360.0 / 1024.0
+        ret['Airspeed Type'] = 'TAS' if airspeed_type else 'IAS'
+        if airspeed > 0 and airspeed < 1023:
+            ret['Airspeed'] = (airspeed - 1) * mult
+    else:
+        return {}  # If the subtype is unrecognized then we shouldn't return anything.
+    
+    return ret
+
+
 class Message:
     """A class to hold the data conveyed by an ADS-B message
     
@@ -244,6 +318,8 @@ class Message:
         
         if TYPE_TABLE[self.type][1] == 'APOS':
             self.params = parse_apos(self.type, self.ME)
+        elif TYPE_TABLE[self.type][1] == 'AVEL':
+            self.params = parse_avel(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'IDENT':
             self.params = parse_ident(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'SPOS':
