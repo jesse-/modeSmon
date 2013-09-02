@@ -90,6 +90,17 @@ CATEGORY_TABLE = {
     'D' : (None, None, None, None, None, None, None, None)
 }
 
+# Emergency state table
+EMERG_STATES = ('',
+                'General emergency',
+                'Lifeguard/Medical',
+                'Minimum fuel',
+                'No communications',
+                'Unlawful interference',
+                'Downed aircraft',
+                ''
+               )
+
 
 def parse_ident(msg_type, message):
     """Parse an IDENT type message to get aircraft identification and class."""
@@ -300,6 +311,33 @@ def parse_avel(msg_type, message):
     return ret
 
 
+def parse_astatus(msg_type, message):
+    """Parse an aircraft status message to get the Mode A code and emergency status."""
+    
+    ret = {}
+    
+    if msg_type != 28:
+        raise ValueError('Message type {0} is not an aircraft status type.'.format(msg_type))
+    
+    subtype = (message >> 48) & 0x07
+    
+    if subtype == 1:
+        # Emergency/priority status and Mode A code
+        emerg_state = (message >> 45) & 0x07
+        mode_a = (message >> 32) & 0x1fff
+        if emerg_state:
+            ret['Emergency'] = EMERG_STATES[emerg_state]
+        ret['Mode A Code'] = mode_a
+    elif subtype == 2:
+        # 1090ES TCAS RA Broadcast
+        # Looks like this is more of a mode S thing. I'll have to speak to Tom before implementing it.
+        pass
+    else:
+        return {}  # If the subtype is unrecognized then we shouldn't return anything.
+    
+    return ret
+
+
 class Message:
     """A class to hold the data conveyed by an ADS-B message
     
@@ -320,6 +358,8 @@ class Message:
             self.params = parse_apos(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'AVEL':
             self.params = parse_avel(self.type, self.ME)
+        elif TYPE_TABLE[self.type][1] == 'ASTATUS':
+            self.params = parse_astatus(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'IDENT':
             self.params = parse_ident(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'SPOS':
