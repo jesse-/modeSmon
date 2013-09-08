@@ -338,6 +338,38 @@ def parse_astatus(msg_type, message):
     return ret
 
 
+def parse_aostatus(msg_type, message):
+    """Parse an aircraft operational status message to retrieve a variety of capability codes."""
+    
+    ret = {}
+    
+    if msg_type != 31:
+        raise ValueError('Message type {0} is not an aircraft operational status type.'.format(msg_type))
+    
+    subtype = (message >> 48) & 0x07
+    version = (message >> 13) & 0x07
+    nic_a = (message >> 12) & 0x01
+    nac_p = (message >> 8) & 0x0f
+    sil = (message >> 4) & 0x03
+    hrd = (message >> 2) & 0x01
+    sil_sup = (message >> 1) & 0x01
+    
+    if subtype == 0:
+        aircapclass = (message >> 32) & 0xffff
+        airopmode = (message >> 16) & 0xffff
+        gva = (message >> 6) & 0x03
+        nic_baro = (message >> 3) & 0x01
+    elif subtype == 1:
+        surcapclass = (message >> 36) & 0x0fff
+        lenw = (message >> 32) & 0x0f
+        suropmode = (message >> 16) & 0xffff
+        trkhd = (message >> 3) & 0x01
+    else:
+        return {}  # If the subtype is unrecognized then we shouldn't return anything.
+    
+    return ret
+
+
 class Message:
     """A class to hold the data conveyed by an ADS-B message
     
