@@ -359,13 +359,71 @@ def parse_aostatus(msg_type, message):
         airopmode = (message >> 16) & 0xffff
         gva = (message >> 6) & 0x03
         nic_baro = (message >> 3) & 0x01
+        
+        ret['TCAS Operational'] = (aircapclass >> 13) & 0x01 == 0x01
+        ret['1090 MHz Extended Squitter Capability'] = (aircapclass >> 12) & 0x01 == 0x01
+        ret['Air-Referenced Velocity Report Capability'] = (aircapclass >> 9) & 0x01 == 0x01
+        ret['Target State Report Capability'] = (aircapclass >> 8) & 0x01 == 0x01
+        ret['Target Change Report Capability'] = ('None', 'TC+0 only', 'All TC reports', 'Unknown')[(aircapclass >> 6) & 0x03]
+        ret['Universal Access Transceiver'] = (aircapclass >> 5) & 0x01 == 0x01
+        
+        ret['TCAS Resolution Advisory Active'] = (airopmode >> 13) & 0x01 == 0x01
+        ret['IDENT Switch Active'] = (airopmode >> 12) & 0x01 == 0x01
+        ret['Single Antenna'] = (airopmode >> 10) & 0x01 == 0x01
+        sda = (airopmode >> 8) & 0x03
+        if sda:
+            ret['System Design Assurance Level'] = ('D', 'C', 'B')[sda-1]
+        if gva == 1:
+            ret['Geometric Vertical Accuracy (m)'] = 150
+        elif gva >= 2:
+            ret['Geometric Vertical Accuracy (m)'] = 45
+        ret['Barometric Altitude Checked'] = nic_baro == 0x01
     elif subtype == 1:
         surcapclass = (message >> 36) & 0x0fff
         lenw = (message >> 32) & 0x0f
         suropmode = (message >> 16) & 0xffff
         trkhd = (message >> 3) & 0x01
+        
+        ret['1090 MHz Extended Squitter Capability'] = (surcapclass >> 8) & 0x01 == 0x01
+        ret['Class B2 Transmit Power'] = '< 70W' if (surcapclass >> 5) & 0x01 else '>= 70W'
+        ret['Universal Access Transceiver'] = (surcapclass >> 4) & 0x01 == 0x01
+        nac_v = (surcapclass >> 1) & 0x07
+        if nac_v == 1:
+            ret['Horiz. Velocity Error (m/s)'] = 10.0
+        elif nac_v == 2:
+            ret['Horiz. Velocity Error (m/s)'] = 3.0
+        elif nac_v == 3:
+            ret['Horiz. Velocity Error (m/s)'] = 1.0
+        elif nac_v == 4:
+            ret['Horiz. Velocity Error (m/s)'] = 0.3
+        ret['NIC Supplement-C'] = surcapclass & 0x01
+        if lenw:
+            ret['Max. Length (m)'] = (15, 25, 35, 45, 55, 65, 75, 85)[lenw>>1]
+            ret['Max. Width (m)'] = (None, 23, 28.5, 34, 33, 38, 39.5, 45, 45, 52, 59.5, 67, 72.5, 80, 80, 90)[lenw]
+        
+        ret['TCAS Resolution Advisory Active'] = (airopmode >> 13) & 0x01 == 0x01
+        ret['IDENT Switch Active'] = (airopmode >> 12) & 0x01 == 0x01
+        ret['Single Antenna'] = (airopmode >> 10) & 0x01 == 0x01
+        sda = (airopmode >> 8) & 0x03
+        if sda:
+            ret['System Design Assurance Level'] = ('D', 'C', 'B')[sda-1]
+        gpsaxlat = (airopmode >> 5) & 0x07
+        gpsaxlon = airopmode & 0x1f
+        if gpsaxlat:
+            ret['GPS Antenna Offset to Right (m)'] = (gpsaxlat & 0x03) * (2 if gpsaxlat & 0x04 else -2)
+        if gpsaxlon:
+            ret['GPS Antenna Offset to Aft (m)'] = (gpsaxlon - 1) * 2
+        ret['Heading/Ground Track Mode'] = 'Track' if trkhd else 'Heading'
     else:
         return {}  # If the subtype is unrecognized then we shouldn't return anything.
+    
+    ret['ADS-B Version'] = ('A', 'B', 'C', 'Unrecognized', 'Unrecognized', 'Unrecognized', 'Unrecognized', 'Unrecognized')[version]
+    ret['NIC Supplement-A'] = nic_a
+    if nac_p > 0 and nac_p < 12:
+        ret['Horiz. Position Error'] = ('10NM', '4NM', '2NM', '1NM', '0.5NM', '0.3NM', '0.1NM', '0.05NM', '30m', '10m', '3m')[nac_p-1]
+    if sil:
+        ret['Source Integrity Level'] = (None, '<= 1e-3', '<= 1e-5', '<= 1e-7')[sil] + (' per sample' if sil_sup else ' per hour')
+    ret['Horiz. Reference Direction'] = 'Magnetic North' if hrd else 'True North'
     
     return ret
 
@@ -392,6 +450,8 @@ class Message:
             self.params = parse_avel(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'ASTATUS':
             self.params = parse_astatus(self.type, self.ME)
+        elif TYPE_TABLE[self.type][1] == 'AOSTATUS':
+            self.params = parse_aostatus(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'IDENT':
             self.params = parse_ident(self.type, self.ME)
         elif TYPE_TABLE[self.type][1] == 'SPOS':
