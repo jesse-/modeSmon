@@ -25,6 +25,9 @@
 # along with this program.  If not, see {http://www.gnu.org/licenses/}.
 
 
+import gillham
+
+
 DEBUG = True
 
 # The length of the mode S ME field in bits. This contains the ADS-B message.
@@ -159,9 +162,11 @@ def parse_apos(msg_type, message):
         ret['Surveillance Status'] = 'Special Position Identification'
     
     if ret['Alt. Type'] == 'GNSS':
-        ret['Altitude'] = 'GNSS code 0x{0:X}'.format(alt_code)  # Not sure how this is coded yet. I think it's some sort of BCD affair.
+        ret['GNSS Altitude code'] = 'GNSS code 0x{0:X}'.format(alt_code)  # Not sure how this is coded yet. I think it's some sort of BCD affair.
     else:
-        ret['Altitude'] = None  # Need Tom's decoding function for this -- it's almost the same as the native Mode S code.
+        alt = gillham.gillham(alt_code)
+        if alt != None:
+            ret['Altitude (ft)'] = alt
     
     ret['NIC Supplement-B'] = nic_b
     ret['Time Synchronized'] = True if time_sync else False
