@@ -406,14 +406,14 @@ def parse_aostatus(msg_type, message):
             ret['Max. Length (m)'] = (15, 25, 35, 45, 55, 65, 75, 85)[lenw>>1]
             ret['Max. Width (m)'] = (None, 23, 28.5, 34, 33, 38, 39.5, 45, 45, 52, 59.5, 67, 72.5, 80, 80, 90)[lenw]
         
-        ret['TCAS Resolution Advisory Active'] = (airopmode >> 13) & 0x01 == 0x01
-        ret['IDENT Switch Active'] = (airopmode >> 12) & 0x01 == 0x01
-        ret['Single Antenna'] = (airopmode >> 10) & 0x01 == 0x01
-        sda = (airopmode >> 8) & 0x03
+        ret['TCAS Resolution Advisory Active'] = (suropmode >> 13) & 0x01 == 0x01
+        ret['IDENT Switch Active'] = (suropmode >> 12) & 0x01 == 0x01
+        ret['Single Antenna'] = (suropmode >> 10) & 0x01 == 0x01
+        sda = (suropmode >> 8) & 0x03
         if sda:
             ret['System Design Assurance Level'] = ('D', 'C', 'B')[sda-1]
-        gpsaxlat = (airopmode >> 5) & 0x07
-        gpsaxlon = airopmode & 0x1f
+        gpsaxlat = (suropmode >> 5) & 0x07
+        gpsaxlon = suropmode & 0x1f
         if gpsaxlat:
             ret['GPS Antenna Offset to Right (m)'] = (gpsaxlat & 0x03) * (2 if gpsaxlat & 0x04 else -2)
         if gpsaxlon:
