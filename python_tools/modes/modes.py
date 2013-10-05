@@ -1,5 +1,6 @@
 import re
 import bitstring
+import adsblib
 
 
 class DownlinkFormat(object):
@@ -78,11 +79,19 @@ class ModeSReply(object):
     timestamp = None
     icao = None
     data = None
+    message = None
 
     def __init__(self, timestamp=None, icao=None, data=None):
         self.timestamp = timestamp
         self.icao = icao
         self.data = data
+
+        dlf = DownlinkFormat()
+        link_format = dlf.get_format(self.format)
+        if link_format[-1] == ('ME', '56'):
+            self.message = adsblib.Message(self.data[-56:].uint)
+        else:
+            self.message = None
 
     @classmethod
     def from_message(cls, message):
@@ -125,8 +134,9 @@ class ModeSReply(object):
         fmt = self.data[0:5]
         return 24 if fmt[0:2].all(1) else fmt.uint
 
-    def decode(self):
+    def decode(self, print_format=False):
         dlf = DownlinkFormat()
         link_format = dlf.get_format(self.format)
-        print(link_format)
-        print(dlf.format_verbose(self.format))
+        if print_format:
+            print(link_format)
+        return dlf.format_verbose(self.format)
