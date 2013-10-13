@@ -163,8 +163,8 @@ def parse_apos(msg_type, message):
     
     if ret['Alt. Type'] == 'GNSS':
         ret['GNSS Altitude code'] = 'GNSS code 0x{0:X}'.format(alt_code)  # Not sure how this is coded yet. I think it's some sort of BCD affair.
-    else:
-        alt = gillham.gillham(alt_code)
+    elif alt_code:
+        alt = gillham.decode_from_message(alt_code, has_mbit=False)
         if alt != None:
             ret['Altitude (ft)'] = alt
     

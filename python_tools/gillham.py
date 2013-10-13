@@ -116,6 +116,62 @@ def dump_code():
     return sorted(code, key=lambda x: x[0])
 
 
+def decode_from_message(code, has_mbit=True):
+    """
+        Decode the altitude as it would appear in an actual mode S message.
+
+        This is complicated. It can either be a Gillham code or a simple binary code. The
+        general altitude code format is as follows:
+            X  X  X  X  X  X  0  X  Q  X  X  X  X  Altitude is in feet (M bit == 0)
+            X  X  X  X  X  X  1  X  X  X  X  X  X  Reserved for metric altitude reporting (M bit == 1)
+            0  1  2  3  4  5  6  7  8  9 10 11 12  Transmission order
+            MSb                                 LSb
+
+        If the altitude is in feet, a Q bit setting of 0 signifies that the altitude is encoded in
+        100 foot increments using the Gillham code with the following bit ordering:
+            C1 A1 C2 A2 C4 A4 0 B1 0 B2 D2 B4 D4
+
+        If the Q bit is 1 then the altitude is encoded using a simple binary code in 25 foot increments:
+            d10 d9 d8 d7 d6 d5 0 d4 1 d3 d2 d1 d0
+        The altitude, A in feet is given by:
+            A = 25 * d[10:0] - 1000
+
+        In extended squitters, the same code is used but the M bit is not transmitted. It is assumed to
+        be zero in this case i.e. the altitude is in feet.
+    """
+
+    data = int(code)
+    q_bit = (data >> 4) & 1
+    m_bit = (data >> 6) & 1 if has_mbit else 0
+    if has_mbit:
+        data = ((data & 0x1f80) >> 1) | (data & 0x3f)  # Eliminate the M bit
+    if m_bit == 0:  # If the M bit is zero, the Q bit exists so eliminate it
+        data = ((data & 0xfe0) >> 1) | (data & 0x0f)
+    # data now contains the 11 bit altitude code
+
+    if m_bit == 1:  # The metric encoding is reserved and not specified
+        return None
+    elif q_bit == 1:  # Simple binary coding
+        return 25.0 * data - 1000.0
+    elif q_bit == 0:  # Gillham coding
+        # A silly amount of reordering is required here
+        d4 = data & 1
+        b4 = (data & 2) >> 1
+        d2 = (data & 4) >> 2
+        b2 = (data & 8) >> 3
+        b1 = (data & 16) >> 4
+        a4 = (data & 32) >> 5
+        c4 = (data & 64) >> 6
+        a2 = (data & 128) >> 7
+        c2 = (data & 256) >> 8
+        a1 = (data & 512) >> 9
+        c1 = (data & 1024) >> 10
+        return gillham((d2 << 10) | (d4 << 9) | (a1 << 8) | (a2 << 7) | (a4 << 6) | (b1 << 5) | (b2 << 4) | (b4 << 3) | (c1 << 2) | (c2 << 1) | c4)
+
+    # Shouldn't get here
+    return None
+
+
 def main():
     for lower, upper, converted_alt, bit_pattern in dump_code():
         print('{0:>10} to {1:>10} ({2}): {3}'.format(
