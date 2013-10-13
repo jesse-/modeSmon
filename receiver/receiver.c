@@ -67,13 +67,13 @@ const int debug = 0;
 
 // Setting fix_xored_crcs will cause the error correction code to attempt to fix single bit errors in messages where the CRC is XORed with
 // the ICAO aircraft address. Doing this is computationally more intensive.
-const int fix_xored_crcs = 1;
+const int fix_xored_crcs = 0;
 /*
  * Setting fix_2_bit_errors will cause the error correction code to attempt to fix double bit errors but only in messages where the CRC is not
  * XORed with the ICAO aircraft address. Double bit errors where both flipped bits fall within the DF field will not be corrected. Fixing
  * double bit errors is computationally quite intensive.
  */
-const int fix_2_bit_errors = 1;
+const int fix_2_bit_errors = 0;
 
 // Mode S receiver parameters
 #define MODE_S_FREQ 1090000000
